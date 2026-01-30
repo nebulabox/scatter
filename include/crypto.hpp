@@ -30,7 +30,6 @@ private:
     uint64_t next();
 };
 
-#ifdef SCATTER_HAVE_SODIUM
 class SodiumAead : public CryptoProvider {
 public:
     SodiumAead();
@@ -42,6 +41,5 @@ public:
 private:
     std::vector<uint8_t> key_;
 };
-#endif
 
 } // namespace scatter

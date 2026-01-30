@@ -8,11 +8,7 @@ namespace scatter {
 
 TransportPool::TransportPool(asio::io_context &io, const ClientConfig &cfg)
     : io_(io), cfg_(cfg) {
-#ifdef SCATTER_HAVE_SODIUM
   crypto_.reset(new SodiumAead());
-#else
-  crypto_.reset(new XorStreamCipher());
-#endif
   crypto_->set_key(cfg_.key);
 }
 

@@ -2,11 +2,38 @@
 cmake_minimum_required(VERSION 3.15)
 project(scatter LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set (CMAKE_C_STANDARD 11)
+set (CMAKE_CXX_STANDARD 20)
+set (CMAKE_MACOSX_RPATH TRUE)
+set( CMAKE_EXPORT_COMPILE_COMMANDS 1 ) 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SCATTER_USE_STANDALONE_ASIO "Use standalone Asio instead of Boost.Asio" ON)
+
+set (BUILD_TYPE ${CMAKE_BUILD_TYPE})
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug)
+    set(BUILD_TYPE Debug)
+endif ()
+
+if( CMAKE_BUILD_TYPE STREQUAL "Debug" )
+    message( "Debug Build >>>" )
+    add_definitions(-DDEBUG)
+    add_definitions(-DDebug)
+endif()
+
+if (UNIX AND NOT APPLE)
+    set(LINUX TRUE)
+endif ()
+
+message(STATUS "Running cmake version ${CMAKE_VERSION}")
+
+if (APPLE) 
+	message(STATUS "Disable deprecated warnings")
+	add_compile_options( -Wno-deprecated)
+endif ()
+
 
 if(SCATTER_USE_STANDALONE_ASIO)
     if(NOT DEFINED ASIO_INCLUDE_DIR)
@@ -41,7 +68,7 @@ else()
 endif()
 
 # libsodium (vcpkg): find_package(unofficial-sodium CONFIG)
-find_package(unofficial-sodium CONFIG QUIET)
+find_package(unofficial-sodium CONFIG REQUIRED)
 if(unofficial-sodium_FOUND)
   target_link_libraries(scatter_common PUBLIC unofficial-sodium::sodium)
   target_compile_definitions(scatter_common PUBLIC SCATTER_HAVE_SODIUM)

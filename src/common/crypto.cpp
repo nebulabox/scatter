@@ -1,10 +1,7 @@
 
 #include "crypto.hpp"
 #include <cstring>
-
-#ifdef SCATTER_HAVE_SODIUM
 #include <sodium.h>
-#endif
 
 namespace scatter {
 
@@ -71,7 +68,6 @@ bool XorStreamCipher::decrypt(uint64_t session_id, uint64_t block_id,
   return encrypt(session_id, block_id, shard_id, direction, inout);
 }
 
-#ifdef SCATTER_HAVE_SODIUM
 static void
 derive_nonce(uint8_t nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES],
              uint64_t sid, uint64_t bid, uint16_t shard, uint8_t dir) {
@@ -132,6 +128,5 @@ bool SodiumAead::decrypt(uint64_t session_id, uint64_t block_id,
   inout.swap(out);
   return true;
 }
-#endif
 
 } // namespace scatter
