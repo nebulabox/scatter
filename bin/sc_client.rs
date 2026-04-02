@@ -74,6 +74,16 @@ async fn handle_client(mut socket: TcpStream) -> Result<()> {
             socket.read_exact(&mut domain).await?;
             String::from_utf8(domain)?
         }
+        0x04 => {
+            // IPv6
+            let mut ip = [0u8; 16];
+            socket.read_exact(&mut ip).await?;
+            format!(
+                "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
+                ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7],
+                ip[8], ip[9], ip[10], ip[11], ip[12], ip[13], ip[14], ip[15]
+            )
+        }
         _ => bail!("暂不支持该地址类型"),
     };
 
