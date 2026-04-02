@@ -23,9 +23,9 @@ path = "bin/sc_server.rs"
 
 
 [dependencies]
-tokio = { version = "1.0", features = ["full"] }
-# 方便的错误处理
-anyhow = "1.0"  
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+rand = "0.8"
 
 
 # Command Line Argument Parser: https://crates.io/crates/clap
@@ -41,7 +41,6 @@ base64 = "0.22"
 build-time = "0.1"
 directories = "6.0"
 libc = { version = "0.2", features = ["extra_traits"] }
-rand = "0.10"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
