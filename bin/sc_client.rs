@@ -120,15 +120,43 @@ async fn handle_client(mut socket: TcpStream) -> Result<()> {
     let reply = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
     socket.write_all(&reply).await?;
 
-    // 5. 数据透传 (使用更现代的 API)
+    // 5. 数据透传 (拆分为独立数据包处理)
     let (mut local_read, mut local_write) = socket.split();
     let (mut server_read, mut server_write) = remote_server.split();
 
-    // 只要有一方断开，就结束
-    let _ = tokio::select! {
-        res = tokio::io::copy(&mut local_read, &mut server_write) => res,
-        res = tokio::io::copy(&mut server_read, &mut local_write) => res,
-    };
+    // 定义数据包大小
+    const PACKET_SIZE: usize = 4096;
+    let mut local_buf = vec![0u8; PACKET_SIZE];
+    let mut server_buf = vec![0u8; PACKET_SIZE];
+
+    loop {
+        tokio::select! {
+            // 从本地客户端读取数据包
+            res = local_read.read(&mut local_buf) => {
+                match res? {
+                    0 => break, // 连接关闭
+                    n => {
+                        let packet = &local_buf[..n];
+                        // 【可在此处理本地→服务器的数据包】
+                        println!("本地→服务器 数据包大小: {} 字节", n);
+                        server_write.write_all(packet).await?;
+                    }
+                }
+            }
+            // 从远程服务器读取数据包
+            res = server_read.read(&mut server_buf) => {
+                match res? {
+                    0 => break, // 连接关闭
+                    n => {
+                        let packet = &server_buf[..n];
+                        // 【可在此处理服务器→本地的数据包】
+                        println!("服务器→本地 数据包大小: {} 字节", n);
+                        local_write.write_all(packet).await?;
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }

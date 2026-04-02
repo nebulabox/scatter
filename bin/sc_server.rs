@@ -39,11 +39,37 @@ async fn handle_connection(mut client_stream: TcpStream) -> Result<()> {
             let (mut c_read, mut c_write) = client_stream.split();
             let (mut i_read, mut i_write) = internet_stream.split();
 
-            // 使用 select! 处理双向转发
-            tokio::select! {
-                res = tokio::io::copy(&mut c_read, &mut i_write) => res?,
-                res = tokio::io::copy(&mut i_read, &mut c_write) => res?,
-            };
+            // 拆分为独立数据包处理
+            const PACKET_SIZE: usize = 4096;
+            let mut client_buf = vec![0u8; PACKET_SIZE];
+            let mut internet_buf = vec![0u8; PACKET_SIZE];
+
+            loop {
+                tokio::select! {
+                    res = c_read.read(&mut client_buf) => {
+                        match res? {
+                            0 => break,
+                            n => {
+                                let packet = &client_buf[..n];
+                                // 【可在此处理客户端→互联网的数据包】
+                                println!("客户端→互联网 数据包大小: {} 字节", n);
+                                i_write.write_all(packet).await?;
+                            }
+                        }
+                    }
+                    res = i_read.read(&mut internet_buf) => {
+                        match res? {
+                            0 => break,
+                            n => {
+                                let packet = &internet_buf[..n];
+                                // 【可在此处理互联网→客户端的数据包】
+                                println!("互联网→客户端 数据包大小: {} 字节", n);
+                                c_write.write_all(packet).await?;
+                            }
+                        }
+                    }
+                }
+            }
             Ok(())
         }
         Err(e) => {
