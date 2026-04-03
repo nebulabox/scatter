@@ -69,8 +69,7 @@ async fn handle_connection(mut client_write: quinn::SendStream, mut client_read:
                         match res {
                             Ok(packet) => {
                                 // 【可在此处理客户端→互联网的数据包】
-                                println!("客户端→互联网 数据包大小: {} 字节, 加密: {}, 压缩: {}", 
-                                    packet.payload.len(), packet.header.encryption, packet.header.compression);
+                                println!("客户端→互联网 数据包大小: {} 字节", packet.payload.len());
                                 
                                 i_write.write_all(&packet.payload).await?;
                             }
@@ -82,10 +81,9 @@ async fn handle_connection(mut client_write: quinn::SendStream, mut client_read:
                             Ok(0) | Err(_) => break, // EOF or error
                             Ok(n) => {
                                 let payload = &internet_buf[..n];
-                                println!("互联网→客户端 数据包大小: {} 字节, 加密: {}, 压缩: {}", 
-                                    payload.len(), 0x01, 0x01);
+                                println!("互联网→客户端 数据包大小: {} 字节", payload.len());
                                 
-                                let response_packet = Packet::new(0x01, 0x01, payload.to_vec());
+                                let response_packet = Packet::new(payload.to_vec());
                                 if let Err(_) = response_packet.write_to(&mut client_write).await {
                                     break;
                                 }

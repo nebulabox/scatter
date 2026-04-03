@@ -158,7 +158,7 @@ async fn handle_client(mut socket: TcpStream, quic_endpoint: Endpoint) -> Result
         bail!("目标地址过长");
     }
 
-    let packet = Packet::new(0x01, 0x01, target_bytes.to_vec());
+    let packet = Packet::new(target_bytes.to_vec());
     packet.write_to(&mut server_write).await?;
 
     // 3. 等待 Server 确认它连接目标成功
@@ -190,7 +190,7 @@ async fn handle_client(mut socket: TcpStream, quic_endpoint: Endpoint) -> Result
                         let packet_data = &local_buf[..n];
                         println!("本地→服务器 数据包大小: {} 字节", n);
                         
-                        let packet = Packet::new(0x01, 0x01, packet_data.to_vec());
+                        let packet = Packet::new(packet_data.to_vec());
                         packet.write_to(&mut server_write).await?;
                     }
                 }
