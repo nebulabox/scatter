@@ -8,21 +8,12 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+const REMOTE_SERVER_NAME: &str = "analytics.itunes.apple.com";
+
 #[derive(Debug, Clone)]
 pub struct ClientConfigArgs {
     pub listen_addr: String,
     pub server_addr: String,
-    pub server_name: String,
-}
-
-impl Default for ClientConfigArgs {
-    fn default() -> Self {
-        Self {
-            listen_addr: "".to_string(),
-            server_addr: "".to_string(),
-            server_name: "analytics.itunes.apple.com".to_string(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -40,8 +31,6 @@ impl InsecureNoopVerifier {
     }
 }
 
-// WARNING: This verifier disables all TLS certificate and signature checks.
-// Only use in trusted/internal environments.
 impl rustls::client::danger::ServerCertVerifier for InsecureNoopVerifier {
     fn verify_server_cert(
         &self,
@@ -100,8 +89,7 @@ pub async fn run(config: ClientConfigArgs) -> Result<()> {
 
     let endpoint = create_quinn_endpoint()?;
     let remote_server_addr: SocketAddr = config.server_addr.parse()?;
-    let remote_server_name = Arc::<str>::from(config.server_name);
-
+    let remote_server_name = Arc::<str>::from(REMOTE_SERVER_NAME);
     loop {
         let (socket, _) = listener.accept().await?;
         let endpoint_clone = endpoint.clone();

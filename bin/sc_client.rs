@@ -23,10 +23,10 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let mut config = ClientConfigArgs::default();
-    config.listen_addr = args.bind_addr;
-    config.server_addr = args.server_addr;
-    let server_sock_addr: SocketAddr = config.server_addr.parse()?;
-    config.server_name = server_sock_addr.ip().to_string();
+    let _: SocketAddr = args.server_addr.parse()?;
+    let config = ClientConfigArgs {
+        listen_addr: args.bind_addr,
+        server_addr: args.server_addr,
+    };
     run(config).await
 }

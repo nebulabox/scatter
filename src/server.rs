@@ -10,14 +10,6 @@ pub struct ServerConfigArgs {
     pub listen_addr: String,
 }
 
-impl Default for ServerConfigArgs {
-    fn default() -> Self {
-        Self {
-            listen_addr: "0.0.0.0:19911".to_string(),
-        }
-    }
-}
-
 static CERT_DER: &[u8] = &[
     48, 130, 3, 11, 48, 130, 1, 243, 160, 3, 2, 1, 2, 2, 20, 105, 148, 136, 2, 78, 70, 98, 209,
     222, 74, 215, 44, 191, 123, 47, 199, 221, 227, 186, 58, 48, 13, 6, 9, 42, 134, 72, 134, 247,
@@ -204,7 +196,7 @@ async fn handle_connection(
                                 println!("互联网→客户端 数据包大小: {} 字节", payload.len());
 
                                 let response_packet = Packet::new(payload.to_vec());
-                                if let Err(_) = response_packet.write_to(&mut client_write).await {
+                                if response_packet.write_to(&mut client_write).await.is_err() {
                                     break;
                                 }
                             }
