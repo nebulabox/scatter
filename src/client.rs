@@ -1,19 +1,76 @@
 use crate::packet::Packet;
 use anyhow::{Result, bail};
-use quinn::{ClientConfig, Endpoint};
+use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
 use rustls::pki_types::{CertificateDer, ServerName};
 use std::net::{Ipv6Addr, SocketAddr};
 use std::str;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+use tokio::time::Instant;
 
 const REMOTE_SERVER_NAME: &str = "analytics.itunes.apple.com";
+const QUIC_KEEPALIVE_SECS: u64 = 10;
+const QUIC_IDLE_TIMEOUT_SECS: u64 = 60;
+const QUIC_MAX_CONCURRENT_BI_STREAMS: u32 = 1024;
+const RELAY_BUFFER_SIZE: usize = 32 * 1024;
+const PACKET_BATCH_MAX_DELAY_MS: u64 = 10;
+const PACKET_BATCH_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ClientConfigArgs {
     pub listen_addr: String,
     pub server_addr: String,
+}
+
+struct SharedQuicConnection {
+    endpoint: Endpoint,
+    remote_server_addr: SocketAddr,
+    connection: Mutex<Option<Connection>>,
+}
+
+impl SharedQuicConnection {
+    fn new(endpoint: Endpoint, remote_server_addr: SocketAddr) -> Self {
+        Self {
+            endpoint,
+            remote_server_addr,
+            connection: Mutex::new(None),
+        }
+    }
+
+    async fn ensure_connected(&self) -> Result<Connection> {
+        let mut guard = self.connection.lock().await;
+        if let Some(connection) = guard.as_ref() {
+            if connection.close_reason().is_none() {
+                return Ok(connection.clone());
+            }
+            *guard = None;
+        }
+
+        let connection = self
+            .endpoint
+            .connect(self.remote_server_addr, REMOTE_SERVER_NAME)?
+            .await?;
+        *guard = Some(connection.clone());
+        Ok(connection)
+    }
+
+    async fn open_bi(&self) -> Result<(SendStream, RecvStream)> {
+        let connection = self.ensure_connected().await?;
+        match connection.open_bi().await {
+            Ok(stream) => Ok(stream),
+            Err(_) => {
+                let mut guard = self.connection.lock().await;
+                *guard = None;
+                drop(guard);
+
+                let reconnected = self.ensure_connected().await?;
+                Ok(reconnected.open_bi().await?)
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -66,6 +123,16 @@ impl rustls::client::danger::ServerCertVerifier for InsecureNoopVerifier {
     }
 }
 
+fn build_transport_config() -> Result<quinn::TransportConfig> {
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(QUIC_KEEPALIVE_SECS)));
+    transport.max_idle_timeout(Some(quinn::IdleTimeout::try_from(Duration::from_secs(
+        QUIC_IDLE_TIMEOUT_SECS,
+    ))?));
+    transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(QUIC_MAX_CONCURRENT_BI_STREAMS));
+    Ok(transport)
+}
+
 fn create_quinn_endpoint() -> Result<Endpoint> {
     let mut crypto = rustls::ClientConfig::builder()
         .dangerous()
@@ -73,9 +140,10 @@ fn create_quinn_endpoint() -> Result<Endpoint> {
         .with_no_client_auth();
     crypto.alpn_protocols = vec![b"h3".to_vec()];
 
-    let client_config = ClientConfig::new(Arc::new(
+    let mut client_config = ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?,
     ));
+    client_config.transport_config(Arc::new(build_transport_config()?));
 
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
     endpoint.set_default_client_config(client_config);
@@ -89,20 +157,12 @@ pub async fn run(config: ClientConfigArgs) -> Result<()> {
 
     let endpoint = create_quinn_endpoint()?;
     let remote_server_addr: SocketAddr = config.server_addr.parse()?;
-    let remote_server_name = Arc::<str>::from(REMOTE_SERVER_NAME);
+    let shared_quic = Arc::new(SharedQuicConnection::new(endpoint, remote_server_addr));
     loop {
         let (socket, _) = listener.accept().await?;
-        let endpoint_clone = endpoint.clone();
-        let remote_server_name_clone = remote_server_name.clone();
+        let shared_quic_clone = shared_quic.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(
-                socket,
-                endpoint_clone,
-                remote_server_addr,
-                remote_server_name_clone,
-            )
-            .await
-            {
+            if let Err(e) = handle_client(socket, shared_quic_clone).await {
                 eprintln!("处理连接出错: {}", e);
             }
         });
@@ -111,19 +171,14 @@ pub async fn run(config: ClientConfigArgs) -> Result<()> {
 
 async fn handle_client(
     mut socket: TcpStream,
-    quic_endpoint: Endpoint,
-    remote_server_addr: SocketAddr,
-    remote_server_name: Arc<str>,
+    shared_quic: Arc<SharedQuicConnection>,
 ) -> Result<()> {
     negotiate_socks5(&mut socket).await?;
     let (dest_addr, dest_port) = read_connect_target(&mut socket).await?;
     println!("客户端请求连接目标: {}:{}", dest_addr, dest_port);
 
-    // 1. 连接远程 Server (HTTP/3 QUIC transport)
-    let connection = quic_endpoint
-        .connect(remote_server_addr, remote_server_name.as_ref())?
-        .await?;
-    let (mut server_write, mut server_read) = connection.open_bi().await?;
+    // 1. 在共享 QUIC 连接上为当前 SOCKS 会话打开一个独立双向流
+    let (mut server_write, mut server_read) = shared_quic.open_bi().await?;
 
     // 2. 告诉 Server 目标地址
     let target_info = format!("{}:{}", dest_addr, dest_port);
@@ -153,21 +208,38 @@ async fn handle_client(
 
     // 5. 数据透传
     let (mut local_read, mut local_write) = socket.split();
-    let mut local_buf = vec![0u8; 4096];
+    let mut local_buf = vec![0u8; RELAY_BUFFER_SIZE];
+    let mut batched_local_payload = Vec::with_capacity(PACKET_BATCH_MAX_BYTES);
+    let batch_delay = Duration::from_millis(PACKET_BATCH_MAX_DELAY_MS);
+    let flush_timer = tokio::time::sleep(batch_delay);
+    tokio::pin!(flush_timer);
+    let mut timer_armed = false;
 
     loop {
         tokio::select! {
             res = local_read.read(&mut local_buf) => {
                 match res? {
-                    0 => break,
+                    0 => {
+                        flush_batched_payload(&mut batched_local_payload, &mut server_write).await?;
+                        break;
+                    }
                     n => {
-                        let packet_data = &local_buf[..n];
-                        println!("本地→服务器 数据包大小: {} 字节", n);
+                        if !timer_armed {
+                            flush_timer.as_mut().reset(Instant::now() + batch_delay);
+                            timer_armed = true;
+                        }
 
-                        let packet = Packet::new(packet_data.to_vec());
-                        packet.write_to(&mut server_write).await?;
+                        batched_local_payload.extend_from_slice(&local_buf[..n]);
+                        if batched_local_payload.len() >= PACKET_BATCH_MAX_BYTES {
+                            flush_batched_payload(&mut batched_local_payload, &mut server_write).await?;
+                            timer_armed = false;
+                        }
                     }
                 }
+            }
+            _ = &mut flush_timer, if timer_armed => {
+                flush_batched_payload(&mut batched_local_payload, &mut server_write).await?;
+                timer_armed = false;
             }
             res = Packet::read_from(&mut server_read) => {
                 match res {
@@ -181,6 +253,21 @@ async fn handle_client(
         }
     }
 
+    Ok(())
+}
+
+async fn flush_batched_payload(
+    batched_payload: &mut Vec<u8>,
+    server_write: &mut SendStream,
+) -> Result<()> {
+    if batched_payload.is_empty() {
+        return Ok(());
+    }
+
+    println!("本地→服务器 聚合数据包大小: {} 字节", batched_payload.len());
+    let payload = std::mem::replace(batched_payload, Vec::with_capacity(PACKET_BATCH_MAX_BYTES));
+    let packet = Packet::new(payload);
+    packet.write_to(server_write).await?;
     Ok(())
 }
 

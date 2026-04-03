@@ -3,12 +3,21 @@ use anyhow::{Result, bail};
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfigArgs {
     pub listen_addr: String,
 }
+
+const QUIC_KEEPALIVE_SECS: u64 = 10;
+const QUIC_IDLE_TIMEOUT_SECS: u64 = 60;
+const QUIC_MAX_CONCURRENT_BI_STREAMS: u32 = 1024;
+const RELAY_BUFFER_SIZE: usize = 32 * 1024;
+const PACKET_BATCH_MAX_DELAY_MS: u64 = 10;
+const PACKET_BATCH_MAX_BYTES: usize = 256 * 1024;
 
 static CERT_DER: &[u8] = &[
     48, 130, 3, 11, 48, 130, 1, 243, 160, 3, 2, 1, 2, 2, 20, 105, 148, 136, 2, 78, 70, 98, 209,
@@ -119,6 +128,16 @@ fn get_dummy_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)>
     ))
 }
 
+fn build_transport_config() -> Result<quinn::TransportConfig> {
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(QUIC_KEEPALIVE_SECS)));
+    transport.max_idle_timeout(Some(quinn::IdleTimeout::try_from(Duration::from_secs(
+        QUIC_IDLE_TIMEOUT_SECS,
+    ))?));
+    transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(QUIC_MAX_CONCURRENT_BI_STREAMS));
+    Ok(transport)
+}
+
 pub async fn run(config: ServerConfigArgs) -> Result<()> {
     let (cert, key) = get_dummy_cert()?;
     let mut server_crypto = rustls::ServerConfig::builder()
@@ -126,9 +145,10 @@ pub async fn run(config: ServerConfigArgs) -> Result<()> {
         .with_single_cert(vec![cert], key)?;
     server_crypto.alpn_protocols = vec![b"h3".to_vec()]; // fake h3 alpn
 
-    let server_config = ServerConfig::with_crypto(Arc::new(
+    let mut server_config = ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)?,
     ));
+    server_config.transport = Arc::new(build_transport_config()?);
     let endpoint = Endpoint::server(server_config, config.listen_addr.parse()?)?;
     println!(
         "Server (QUIC/HTTP3 transport) 监听在 {} ...",
@@ -139,14 +159,21 @@ pub async fn run(config: ServerConfigArgs) -> Result<()> {
         tokio::spawn(async move {
             match conn.await {
                 Ok(connection) => {
-                    // Accept a bidirectional stream from the client
-                    match connection.accept_bi().await {
-                        Ok((send, recv)) => {
-                            if let Err(e) = handle_connection(send, recv).await {
-                                eprintln!("Server 处理任务出错: {}", e);
+                    // 在同一个 QUIC 连接上持续接收并发双向流，实现多路复用
+                    loop {
+                        match connection.accept_bi().await {
+                            Ok((send, recv)) => {
+                                tokio::spawn(async move {
+                                    if let Err(e) = handle_connection(send, recv).await {
+                                        eprintln!("Server 处理任务出错: {}", e);
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("Accept bi stream failed: {}", e);
+                                break;
                             }
                         }
-                        Err(e) => eprintln!("Accept bi stream failed: {}", e),
                     }
                 }
                 Err(e) => eprintln!("Connection failed: {}", e),
@@ -173,7 +200,12 @@ async fn handle_connection(
             client_write.write_all(&[0x00]).await?;
 
             let (mut i_read, mut i_write) = internet_stream.split();
-            let mut internet_buf = vec![0u8; 4096];
+            let mut internet_buf = vec![0u8; RELAY_BUFFER_SIZE];
+            let mut batched_internet_payload = Vec::with_capacity(PACKET_BATCH_MAX_BYTES);
+            let batch_delay = Duration::from_millis(PACKET_BATCH_MAX_DELAY_MS);
+            let flush_timer = tokio::time::sleep(batch_delay);
+            tokio::pin!(flush_timer);
+            let mut timer_armed = false;
 
             loop {
                 tokio::select! {
@@ -190,17 +222,31 @@ async fn handle_connection(
                     }
                     res = i_read.read(&mut internet_buf) => {
                         match res {
-                            Ok(0) | Err(_) => break, // EOF or error
+                            Ok(0) | Err(_) => {
+                                flush_batched_payload(&mut batched_internet_payload, &mut client_write).await.ok();
+                                break;
+                            }, // EOF or error
                             Ok(n) => {
-                                let payload = &internet_buf[..n];
-                                println!("互联网→客户端 数据包大小: {} 字节", payload.len());
+                                if !timer_armed {
+                                    flush_timer.as_mut().reset(Instant::now() + batch_delay);
+                                    timer_armed = true;
+                                }
 
-                                let response_packet = Packet::new(payload.to_vec());
-                                if response_packet.write_to(&mut client_write).await.is_err() {
-                                    break;
+                                batched_internet_payload.extend_from_slice(&internet_buf[..n]);
+                                if batched_internet_payload.len() >= PACKET_BATCH_MAX_BYTES {
+                                    if flush_batched_payload(&mut batched_internet_payload, &mut client_write).await.is_err() {
+                                        break;
+                                    }
+                                    timer_armed = false;
                                 }
                             }
                         }
+                    }
+                    _ = &mut flush_timer, if timer_armed => {
+                        if flush_batched_payload(&mut batched_internet_payload, &mut client_write).await.is_err() {
+                            break;
+                        }
+                        timer_armed = false;
                     }
                 }
             }
@@ -212,4 +258,22 @@ async fn handle_connection(
             bail!("Connect target {} failed: {}", target_addr, e);
         }
     }
+}
+
+async fn flush_batched_payload(
+    batched_payload: &mut Vec<u8>,
+    client_write: &mut quinn::SendStream,
+) -> Result<()> {
+    if batched_payload.is_empty() {
+        return Ok(());
+    }
+
+    println!(
+        "互联网→客户端 聚合数据包大小: {} 字节",
+        batched_payload.len()
+    );
+    let payload = std::mem::replace(batched_payload, Vec::with_capacity(PACKET_BATCH_MAX_BYTES));
+    let response_packet = Packet::new(payload);
+    response_packet.write_to(client_write).await?;
+    Ok(())
 }
