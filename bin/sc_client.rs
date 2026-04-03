@@ -1,26 +1,32 @@
 use anyhow::Result;
 use clap::Parser;
 use scatter::client::{ClientConfigArgs, run};
+use std::net::SocketAddr;
 
 #[derive(Debug, Parser)]
 #[command(name = "sc_client", about = "Scatter SOCKS5 client")]
 struct Args {
-    #[arg(long, help = "SOCKS bind address, e.g. 127.0.0.1")]
+    #[arg(
+        short = 'b',
+        long,
+        help = "SOCKS bind address with port, e.g. 0.0.0.0:19080"
+    )]
     bind_addr: String,
-    #[arg(long, help = "SOCKS bind port, e.g. 19080")]
-    bind_port: u16,
-    #[arg(long, help = "Remote server address, e.g. 127.0.0.1")]
+    #[arg(
+        short = 's',
+        long,
+        help = "Remote server address with port, e.g. 127.0.0.1:19111"
+    )]
     server_addr: String,
-    #[arg(long, help = "Remote server port, e.g. 19911")]
-    server_port: u16,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let mut config = ClientConfigArgs::default();
-    config.listen_addr = format!("{}:{}", args.bind_addr, args.bind_port);
-    config.server_addr = format!("{}:{}", args.server_addr, args.server_port);
-    config.server_name = args.server_addr;
+    config.listen_addr = args.bind_addr;
+    config.server_addr = args.server_addr;
+    let server_sock_addr: SocketAddr = config.server_addr.parse()?;
+    config.server_name = server_sock_addr.ip().to_string();
     run(config).await
 }
