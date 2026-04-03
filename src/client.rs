@@ -18,9 +18,9 @@ pub struct ClientConfigArgs {
 impl Default for ClientConfigArgs {
     fn default() -> Self {
         Self {
-            listen_addr: "127.0.0.1:19080".to_string(),
-            server_addr: "127.0.0.1:19911".to_string(),
-            server_name: "localhost".to_string(),
+            listen_addr: "".to_string(),
+            server_addr: "".to_string(),
+            server_name: "analytics.itunes.apple.com".to_string(),
         }
     }
 }
