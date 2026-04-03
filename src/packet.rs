@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const XOR_KEY: &[u8] = b"scatter_super_secret_xor_key";
+const MAX_PACKET_SIZE: u32 = 10 * 1024 * 1024;
 
 /// 完整数据包
 #[derive(Debug)]
@@ -11,10 +12,10 @@ pub struct Packet {
 
 impl Packet {
     /// 构造数据包，强制进行无感的压缩和加密
-    pub fn new(mut payload: Vec<u8>) -> Self {
-        payload = lz4_flex::compress_prepend_size(&payload);
-        payload = xor_cipher(&payload, XOR_KEY);
-        Packet { payload }
+    pub fn new(payload: Vec<u8>) -> Self {
+        let compressed = lz4_flex::compress_prepend_size(&payload);
+        let encrypted = xor_cipher(&compressed, XOR_KEY);
+        Packet { payload: encrypted }
     }
 
     /// 写入数据包到流
@@ -35,22 +36,20 @@ impl Packet {
         let payload_len = u32::from_be_bytes(len_buf);
 
         // 2. 防御性编程：限制最大数据包大小 (10MB)
-        if payload_len > 10 * 1024 * 1024 {
+        if payload_len > MAX_PACKET_SIZE {
             bail!("数据包过大: {} 字节", payload_len);
         }
 
         // 3. 读取负载数据
-        let mut payload = vec![0u8; payload_len as usize];
-        reader.read_exact(&mut payload).await?;
+        let mut encrypted_payload = vec![0u8; payload_len as usize];
+        reader.read_exact(&mut encrypted_payload).await?;
 
         // 4. 解密
-        payload = xor_cipher(&payload, XOR_KEY);
-        
+        let compressed_payload = xor_cipher(&encrypted_payload, XOR_KEY);
+
         // 5. 解压缩
-        payload = match lz4_flex::decompress_size_prepended(&payload) {
-            Ok(data) => data,
-            Err(e) => bail!("数据解压出错: {}", e),
-        };
+        let payload = lz4_flex::decompress_size_prepended(&compressed_payload)
+            .map_err(|error| anyhow::anyhow!("数据解压出错: {}", error))?;
 
         Ok(Packet { payload })
     }
