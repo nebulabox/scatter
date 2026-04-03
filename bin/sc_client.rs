@@ -1,7 +1,79 @@
 use anyhow::{Result, bail};
+use quinn::{Endpoint, ClientConfig};
+use rustls::pki_types::{CertificateDer, ServerName};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use scatter::packet::Packet;
+
+#[derive(Debug)]
+struct SkipServerVerification;
+
+impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA1,
+            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::ED448,
+        ]
+    }
+}
+
+fn create_quinn_endpoint() -> Result<Endpoint> {
+    let mut crypto = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+        .with_no_client_auth();
+    crypto.alpn_protocols = vec![b"h3".to_vec()];
+
+    let client_config = ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?
+    ));
+
+    let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
+    endpoint.set_default_client_config(client_config);
+
+    Ok(endpoint)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -9,19 +81,21 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     println!("SOCKS5 代理监听在: {}", addr);
 
+    let endpoint = create_quinn_endpoint()?;
+
     loop {
         let (socket, _) = listener.accept().await?;
+        let endpoint_clone = endpoint.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(socket).await {
+            if let Err(e) = handle_client(socket, endpoint_clone).await {
                 eprintln!("处理连接出错: {}", e);
             }
         });
     }
 }
 
-async fn handle_client(mut socket: TcpStream) -> Result<()> {
+async fn handle_client(mut socket: TcpStream, quic_endpoint: Endpoint) -> Result<()> {
     // 1. 处理版本和认证协商
-    /* 客户端发送 : | 0x05 (版本号) | 支持的认证方法数量 | 每个字节代表一种方法 | */
     let mut header = [0u8; 2];
     socket.read_exact(&mut header).await?;
     if header[0] != 0x05 {
@@ -32,50 +106,33 @@ async fn handle_client(mut socket: TcpStream) -> Result<()> {
     let mut methods = vec![0u8; n_methods];
     socket.read_exact(&mut methods).await?;
 
-    /* 服务器回复 : | 0x05 (版本号) | 选择的认证方法 | */
-    // 回复：版本 5，选择“无需认证”模式 (0x00)
     socket.write_all(&[0x05, 0x00]).await?;
 
     // 2. 处理请求路由
-    /* 客户端发送 : | VER (1) | CMD (1) | 0x00 (保留) | ATYP (1) | DST.ADDR (变长) | DST.PORT (2) |
-       CMD (命令码) 0x01: CONNECT 0x02: BIND 0x03: UDP ASSOCIATE
-       ATYP (地址类型) 0x01: IPv4   0x03: 域名   0x04: IPv6
-       SOCKS5 规定端口号使用大端序 (Network Byte Order)
-    */
-    /* 服务端回复 :  | VER (1) | REP (1) | 0x00 (保留) | ATYP (1) | BND.ADDR (变长) | BND.PORT (2) |
-      REP (回复码) 0x00: 成功  0x01: 一般错误  0x02: 连接不允许  0x03: 网络不可达
-                   0x04: 主机不可达  0x05: 连接拒绝  0x06: TTL过期  0x07: 不支持的命令
-                   0x08: 不支持的地址类型 0x09: 其他错误
-       BND.ADDR 和 BND.PORT 是服务器端的绑定地址和端口，通常在 CONNECT 命令中不重要，可以填充为 0
-    */
     let mut request_header = [0u8; 4];
     socket.read_exact(&mut request_header).await?;
 
     let ver = request_header[0];
-    let cmd = request_header[1]; // 0x01 是 CONNECT
-    let atyp = request_header[3]; // 地址类型：0x01 (IPv4), 0x03 (Domain), 0x04 (IPv6)
+    let cmd = request_header[1];
+    let atyp = request_header[3];
 
     if ver != 0x05 || cmd != 0x01 {
         bail!("不支持的命令: {}", cmd);
     }
 
-    // 解析目标地址
     let dest_addr = match atyp {
         0x01 => {
-            // IPv4
             let mut ip = [0u8; 4];
             socket.read_exact(&mut ip).await?;
             format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
         }
         0x03 => {
-            // 域名
             let len = socket.read_u8().await? as usize;
             let mut domain = vec![0u8; len];
             socket.read_exact(&mut domain).await?;
             String::from_utf8(domain)?
         }
         0x04 => {
-            // IPv6
             let mut ip = [0u8; 16];
             socket.read_exact(&mut ip).await?;
             format!(
@@ -90,27 +147,24 @@ async fn handle_client(mut socket: TcpStream) -> Result<()> {
     let dest_port = socket.read_u16().await?;
     println!("客户端请求连接目标: {}:{}", dest_addr, dest_port);
 
-    // 数据透传 (Relay) 握手和请求阶段完成，SOCKS5 协议就退场了。接下来的所有流量都是原始的 TCP 数据流，只需要做双向奔赴的搬运工
-
-    // 1. 连接远程 Server
-    let mut remote_server = TcpStream::connect("127.0.0.1:19911").await?;
+    // 1. 连接远程 Server (HTTP/3 QUIC transport)
+    let connection = quic_endpoint.connect("127.0.0.1:19911".parse()?, "localhost")?.await?;
+    let (mut server_write, mut server_read) = connection.open_bi().await?;
 
     // 2. 告诉 Server 目标地址
     let target_info = format!("{}:{}", dest_addr, dest_port);
     let target_bytes = target_info.as_bytes();
     if target_bytes.len() > 512 {
         bail!("目标地址过长");
-    } // 防御性编程
+    }
 
-    // 使用自定义数据包发送目标地址
     let packet = Packet::new(0x00, 0x00, target_bytes.to_vec());
-    packet.write_to(&mut remote_server).await?;
+    packet.write_to(&mut server_write).await?;
 
-    // 3. 【新增】等待 Server 确认它连接目标成功 (简单握手协议)
+    // 3. 等待 Server 确认它连接目标成功
     let mut server_confirm = [0u8; 1];
-    remote_server.read_exact(&mut server_confirm).await?;
+    server_read.read_exact(&mut server_confirm).await?;
     if server_confirm[0] != 0x00 {
-        // 回复本地 SOCKS 客户端：主机不可达 (0x04)
         socket
             .write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
             .await?;
@@ -121,18 +175,17 @@ async fn handle_client(mut socket: TcpStream) -> Result<()> {
     let reply = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
     socket.write_all(&reply).await?;
 
-    // 5. 数据透传 (使用自定义数据包协议)
+    // 5. 数据透传
     let (mut local_read, mut local_write) = socket.split();
-    let (mut server_read, mut server_write) = remote_server.split();
 
     let mut local_buf = vec![0u8; 4096];
-    let mut server_buf = vec![0u8; 4096];
+
 
     loop {
         tokio::select! {
             res = local_read.read(&mut local_buf) => {
                 match res? {
-                    0 => break, // 连接关闭
+                    0 => break,
                     n => {
                         let packet_data = &local_buf[..n];
                         println!("本地→服务器 数据包大小: {} 字节", n);
@@ -142,13 +195,13 @@ async fn handle_client(mut socket: TcpStream) -> Result<()> {
                     }
                 }
             }
-            res = server_read.read(&mut server_buf) => {
-                match res? {
-                    0 => break,
-                    n => {
-                        println!("服务器→本地 数据包大小: {} 字节", n);
-                        local_write.write_all(&server_buf[..n]).await?;
+            res = Packet::read_from(&mut server_read) => {
+                match res {
+                    Ok(packet) => {
+                        println!("服务器→本地 数据包大小: {} 字节", packet.payload.len());
+                        local_write.write_all(&packet.payload).await?;
                     }
+                    Err(_) => break,
                 }
             }
         }

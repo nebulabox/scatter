@@ -26,8 +26,10 @@ path = "bin/sc_server.rs"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 rand = "0.8"
-
-
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rcgen = "0.13"
+rustls-pki-types = "1"
 # Command Line Argument Parser: https://crates.io/crates/clap
 # Features: https://docs.rs/clap/latest/clap/_features/index.html
 # example: https://docs.rs/clap/latest/clap/_derive/_cookbook/git_derive/index.html
