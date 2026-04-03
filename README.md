@@ -5,18 +5,12 @@ A SOCKS5 relay tool with two binaries:
 - `sc_server`
 - `sc_client`
 
-## Build
-
-```bash
-cargo build --release
-```
-
 ## Usage
 
 ### 1. Start server
 
 ```bash
-cargo run --bin sc_server -- -b 0.0.0.0:19111
+sc_server -b 0.0.0.0:19111
 ```
 
 Arguments:
@@ -26,7 +20,7 @@ Arguments:
 ### 2. Start client
 
 ```bash
-cargo run --bin sc_client -- -b 127.0.0.1:19080 -s 127.0.0.1:19111
+sc_client -b 127.0.0.1:19080 -s 127.0.0.1:19111
 ```
 
 Arguments:
@@ -43,6 +37,6 @@ Set your app to use SOCKS5 proxy at:
 ## Help
 
 ```bash
-cargo run --bin sc_server -- --help
-cargo run --bin sc_client -- --help
+sc_server --help
+sc_client --help
 ```
