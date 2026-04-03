@@ -7,25 +7,12 @@ use std::{net::Ipv6Addr, str};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-const SOCKS_VERSION: u8 = 0x05;
-const SOCKS_CMD_CONNECT: u8 = 0x01;
-const SOCKS_AUTH_NONE: u8 = 0x00;
-const SOCKS_ADDR_IPV4: u8 = 0x01;
-const SOCKS_ADDR_DOMAIN: u8 = 0x03;
-const SOCKS_ADDR_IPV6: u8 = 0x04;
-const SOCKS_REPLY_SUCCEEDED: [u8; 10] =
-    [SOCKS_VERSION, 0x00, 0x00, SOCKS_ADDR_IPV4, 0, 0, 0, 0, 0, 0];
-const SOCKS_REPLY_HOST_UNREACHABLE: [u8; 10] =
-    [SOCKS_VERSION, 0x04, 0x00, SOCKS_ADDR_IPV4, 0, 0, 0, 0, 0, 0];
-const LOCAL_SOCKS_ADDR: &str = "127.0.0.1:19080";
-const REMOTE_SERVER_ADDR: &str = "127.0.0.1:19911";
-const REMOTE_SERVER_NAME: &str = "localhost";
-const LOCAL_BUFFER_SIZE: usize = 4096;
-
 #[derive(Debug)]
-struct SkipServerVerification;
+struct InsecureNoopVerifier;
 
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
+// WARNING: This verifier disables all TLS certificate and signature checks.
+// Only use in trusted/internal environments.
+impl rustls::client::danger::ServerCertVerifier for InsecureNoopVerifier {
     fn verify_server_cert(
         &self,
         _end_entity: &CertificateDer<'_>,
@@ -76,7 +63,7 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
 fn create_quinn_endpoint() -> Result<Endpoint> {
     let mut crypto = rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+        .with_custom_certificate_verifier(Arc::new(InsecureNoopVerifier))
         .with_no_client_auth();
     crypto.alpn_protocols = vec![b"h3".to_vec()];
 
@@ -92,8 +79,8 @@ fn create_quinn_endpoint() -> Result<Endpoint> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let listener = TcpListener::bind(LOCAL_SOCKS_ADDR).await?;
-    println!("SOCKS5 代理监听在: {}", LOCAL_SOCKS_ADDR);
+    let listener = TcpListener::bind("127.0.0.1:19080").await?;
+    println!("SOCKS5 代理监听在: {}", "127.0.0.1:19080");
 
     let endpoint = create_quinn_endpoint()?;
 
@@ -115,7 +102,7 @@ async fn handle_client(mut socket: TcpStream, quic_endpoint: Endpoint) -> Result
 
     // 1. 连接远程 Server (HTTP/3 QUIC transport)
     let connection = quic_endpoint
-        .connect(REMOTE_SERVER_ADDR.parse()?, REMOTE_SERVER_NAME)?
+        .connect("127.0.0.1:19911".parse()?, "localhost")?
         .await?;
     let (mut server_write, mut server_read) = connection.open_bi().await?;
 
@@ -132,16 +119,22 @@ async fn handle_client(mut socket: TcpStream, quic_endpoint: Endpoint) -> Result
     let mut server_confirm = [0u8; 1];
     server_read.read_exact(&mut server_confirm).await?;
     if server_confirm[0] != 0x00 {
-        socket.write_all(&SOCKS_REPLY_HOST_UNREACHABLE).await?;
+        // SOCKS5 失败回复: VER=0x05, REP=0x04(host unreachable), RSV=0x00, ATYP=IPv4, BND=0.0.0.0:0
+        socket
+            .write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await?;
         bail!("远程服务器连接目标失败");
     }
 
     // 4. 回复本地 SOCKS 客户端：连接成功
-    socket.write_all(&SOCKS_REPLY_SUCCEEDED).await?;
+    // SOCKS5 成功回复: VER=0x05, REP=0x00(ok), RSV=0x00, ATYP=IPv4, BND=0.0.0.0:0
+    socket
+        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
 
     // 5. 数据透传
     let (mut local_read, mut local_write) = socket.split();
-    let mut local_buf = vec![0u8; LOCAL_BUFFER_SIZE];
+    let mut local_buf = vec![0u8; 4096];
 
     loop {
         tokio::select! {
@@ -176,7 +169,8 @@ async fn negotiate_socks5(socket: &mut TcpStream) -> Result<()> {
     let mut header = [0u8; 2];
     socket.read_exact(&mut header).await?;
 
-    if header[0] != SOCKS_VERSION {
+    // SOCKS5 握手版本号固定为 0x05
+    if header[0] != 0x05 {
         bail!("仅支持 SOCKS5");
     }
 
@@ -184,7 +178,8 @@ async fn negotiate_socks5(socket: &mut TcpStream) -> Result<()> {
     let mut methods = vec![0u8; methods_len];
     socket.read_exact(&mut methods).await?;
 
-    socket.write_all(&[SOCKS_VERSION, SOCKS_AUTH_NONE]).await?;
+    // 告诉客户端: 使用 "NO AUTH"(0x00)
+    socket.write_all(&[0x05, 0x00]).await?;
     Ok(())
 }
 
@@ -196,7 +191,8 @@ async fn read_connect_target(socket: &mut TcpStream) -> Result<(String, u16)> {
     let command = request_header[1];
     let address_type = request_header[3];
 
-    if version != SOCKS_VERSION || command != SOCKS_CMD_CONNECT {
+    // 仅支持 SOCKS5 CONNECT(0x01)
+    if version != 0x05 || command != 0x01 {
         bail!("不支持的命令: {}", command);
     }
 
@@ -207,18 +203,21 @@ async fn read_connect_target(socket: &mut TcpStream) -> Result<(String, u16)> {
 
 async fn read_target_address(socket: &mut TcpStream, address_type: u8) -> Result<String> {
     match address_type {
-        SOCKS_ADDR_IPV4 => {
+        0x01 => {
+            // ATYP=0x01: IPv4
             let mut ip = [0u8; 4];
             socket.read_exact(&mut ip).await?;
             Ok(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]))
         }
-        SOCKS_ADDR_DOMAIN => {
+        0x03 => {
+            // ATYP=0x03: 域名
             let len = socket.read_u8().await? as usize;
             let mut domain = vec![0u8; len];
             socket.read_exact(&mut domain).await?;
             Ok(str::from_utf8(&domain)?.to_owned())
         }
-        SOCKS_ADDR_IPV6 => {
+        0x04 => {
+            // ATYP=0x04: IPv6
             let mut ip = [0u8; 16];
             socket.read_exact(&mut ip).await?;
             Ok(Ipv6Addr::from(ip).to_string())

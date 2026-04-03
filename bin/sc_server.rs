@@ -5,12 +5,6 @@ use scatter::packet::Packet;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const SERVER_ADDR: &str = "0.0.0.0:19911";
-const ALPN_PROTOCOL: &[u8] = b"h3";
-const SUCCESS_RESPONSE: [u8; 1] = [0x00];
-const FAILURE_RESPONSE: [u8; 1] = [0x01];
-const INTERNET_BUFFER_SIZE: usize = 4096;
-
 static CERT_DER: &[u8] = &[
     48, 130, 3, 11, 48, 130, 1, 243, 160, 3, 2, 1, 2, 2, 20, 105, 148, 136, 2, 78, 70, 98, 209,
     222, 74, 215, 44, 191, 123, 47, 199, 221, 227, 186, 58, 48, 13, 6, 9, 42, 134, 72, 134, 247,
@@ -126,12 +120,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![cert], key)?;
-    server_crypto.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()]; // fake h3 alpn
+    server_crypto.alpn_protocols = vec![b"h3".to_vec()]; // fake h3 alpn
 
     let server_config = ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)?,
     ));
-    let endpoint = Endpoint::server(server_config, SERVER_ADDR.parse()?)?;
+    let endpoint = Endpoint::server(server_config, "0.0.0.0:19911".parse()?)?;
     println!("Server (QUIC/HTTP3 transport) 监听在 19911 端口...");
 
     while let Some(conn) = endpoint.accept().await {
@@ -168,10 +162,11 @@ async fn handle_connection(
 
     match tokio::net::TcpStream::connect(&target_addr).await {
         Ok(mut internet_stream) => {
-            client_write.write_all(&SUCCESS_RESPONSE).await?;
+            // 告知客户端: 目标连接建立成功
+            client_write.write_all(&[0x00]).await?;
 
             let (mut i_read, mut i_write) = internet_stream.split();
-            let mut internet_buf = vec![0u8; INTERNET_BUFFER_SIZE];
+            let mut internet_buf = vec![0u8; 4096];
 
             loop {
                 tokio::select! {
@@ -205,7 +200,8 @@ async fn handle_connection(
             Ok(())
         }
         Err(e) => {
-            let _ = client_write.write_all(&FAILURE_RESPONSE).await;
+            // 告知客户端: 目标连接失败
+            let _ = client_write.write_all(&[0x01]).await;
             bail!("Connect target {} failed: {}", target_addr, e);
         }
     }
