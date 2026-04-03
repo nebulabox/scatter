@@ -8,7 +8,19 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Debug)]
-struct InsecureNoopVerifier;
+struct InsecureNoopVerifier {
+    supported_schemes: Vec<rustls::SignatureScheme>,
+}
+
+impl InsecureNoopVerifier {
+    fn new() -> Self {
+        Self {
+            supported_schemes: rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes(),
+        }
+    }
+}
 
 // WARNING: This verifier disables all TLS certificate and signature checks.
 // Only use in trusted/internal environments.
@@ -41,29 +53,16 @@ impl rustls::client::danger::ServerCertVerifier for InsecureNoopVerifier {
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
+
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA1,
-            rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PSS_SHA384,
-            rustls::SignatureScheme::RSA_PSS_SHA512,
-            rustls::SignatureScheme::ED25519,
-            rustls::SignatureScheme::ED448,
-        ]
+        self.supported_schemes.clone()
     }
 }
 
 fn create_quinn_endpoint() -> Result<Endpoint> {
     let mut crypto = rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(InsecureNoopVerifier))
+        .with_custom_certificate_verifier(Arc::new(InsecureNoopVerifier::new()))
         .with_no_client_auth();
     crypto.alpn_protocols = vec![b"h3".to_vec()];
 
