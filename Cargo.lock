@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "scatter"
-version = "0.1.260402"
+version = "0.1.260403"
 dependencies = [
  "anyhow",
  "base64",
