@@ -1,4 +1,8 @@
 use crate::packet::Packet;
+use crate::tuning::{
+    PACKET_BATCH_MAX_BYTES, PACKET_BATCH_MAX_DELAY_MS, QUIC_IDLE_TIMEOUT_SECS, QUIC_KEEPALIVE_SECS,
+    QUIC_MAX_CONCURRENT_BI_STREAMS, RELAY_BUFFER_SIZE,
+};
 use anyhow::{Result, bail};
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -11,13 +15,6 @@ use tokio::time::Instant;
 pub struct ServerConfigArgs {
     pub listen_addr: String,
 }
-
-const QUIC_KEEPALIVE_SECS: u64 = 10;
-const QUIC_IDLE_TIMEOUT_SECS: u64 = 60;
-const QUIC_MAX_CONCURRENT_BI_STREAMS: u32 = 1024;
-const RELAY_BUFFER_SIZE: usize = 32 * 1024;
-const PACKET_BATCH_MAX_DELAY_MS: u64 = 10;
-const PACKET_BATCH_MAX_BYTES: usize = 256 * 1024;
 
 static CERT_DER: &[u8] = &[
     48, 130, 3, 11, 48, 130, 1, 243, 160, 3, 2, 1, 2, 2, 20, 105, 148, 136, 2, 78, 70, 98, 209,

@@ -1,4 +1,8 @@
 use crate::packet::Packet;
+use crate::tuning::{
+    PACKET_BATCH_MAX_BYTES, PACKET_BATCH_MAX_DELAY_MS, QUIC_IDLE_TIMEOUT_SECS, QUIC_KEEPALIVE_SECS,
+    QUIC_MAX_CONCURRENT_BI_STREAMS, RELAY_BUFFER_SIZE,
+};
 use anyhow::{Result, bail};
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
 use rustls::pki_types::{CertificateDer, ServerName};
@@ -12,12 +16,6 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 const REMOTE_SERVER_NAME: &str = "analytics.itunes.apple.com";
-const QUIC_KEEPALIVE_SECS: u64 = 10;
-const QUIC_IDLE_TIMEOUT_SECS: u64 = 60;
-const QUIC_MAX_CONCURRENT_BI_STREAMS: u32 = 1024;
-const RELAY_BUFFER_SIZE: usize = 32 * 1024;
-const PACKET_BATCH_MAX_DELAY_MS: u64 = 10;
-const PACKET_BATCH_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ClientConfigArgs {

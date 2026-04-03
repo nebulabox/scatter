@@ -1,0 +1,7 @@
+pub const QUIC_KEEPALIVE_SECS: u64 = 10;
+pub const QUIC_IDLE_TIMEOUT_SECS: u64 = 60;
+pub const QUIC_MAX_CONCURRENT_BI_STREAMS: u32 = 1024;
+
+pub const RELAY_BUFFER_SIZE: usize = 256 * 1024;
+pub const PACKET_BATCH_MAX_DELAY_MS: u64 = 30;
+pub const PACKET_BATCH_MAX_BYTES: usize = 1024 * 1024;
