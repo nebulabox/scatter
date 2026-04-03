@@ -26,6 +26,7 @@ path = "bin/sc_server.rs"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 rand = "0.8"
+
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pki-types = "1"
@@ -58,4 +59,5 @@ rpmalloc = { version = "0.2", optional = true }
 byteorder = "1.4"
 env_logger = "0.11"
 byte_string = "1.0"
+lz4_flex = "0.13.0"
 

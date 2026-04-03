@@ -67,7 +67,15 @@ pub struct Packet {
 }
 
 impl Packet {
-    pub fn new(encryption: u8, compression: u8, payload: Vec<u8>) -> Self {
+    pub fn new(encryption: u8, compression: u8, mut payload: Vec<u8>) -> Self {
+        if compression == 0x01 {
+            payload = lz4_flex::compress_prepend_size(&payload);
+        }
+        
+        if encryption == 0x01 {
+            payload = xor_cipher(&payload, b"scatter_super_secret_xor_key");
+        }
+
         Packet {
             header: PacketHeader::new(encryption, compression, payload.len() as u32),
             payload,
@@ -116,6 +124,19 @@ impl Packet {
         // 6. 读取负载数据
         let mut payload = vec![0u8; header.payload_len as usize];
         reader.read_exact(&mut payload).await?;
+
+        // 7. 解密
+        if header.encryption == 0x01 {
+            payload = xor_cipher(&payload, b"scatter_super_secret_xor_key");
+        }
+
+        // 8. 解压缩
+        if header.compression == 0x01 {
+            payload = match lz4_flex::decompress_size_prepended(&payload) {
+                Ok(data) => data,
+                Err(e) => bail!("数据解压出错: {}", e),
+            };
+        }
 
         Ok(Packet { header, payload })
     }

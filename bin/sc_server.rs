@@ -83,9 +83,9 @@ async fn handle_connection(mut client_write: quinn::SendStream, mut client_read:
                             Ok(n) => {
                                 let payload = &internet_buf[..n];
                                 println!("互联网→客户端 数据包大小: {} 字节, 加密: {}, 压缩: {}", 
-                                    payload.len(), 0x00, 0x00);
+                                    payload.len(), 0x01, 0x01);
                                 
-                                let response_packet = Packet::new(0x00, 0x00, payload.to_vec());
+                                let response_packet = Packet::new(0x01, 0x01, payload.to_vec());
                                 if let Err(_) = response_packet.write_to(&mut client_write).await {
                                     break;
                                 }
