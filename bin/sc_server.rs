@@ -5,18 +5,17 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use scatter::packet::Packet;
 
-// Generate a dummy certificate for testing/proxy purposes
-fn generate_dummy_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+// Use static pre-generated certificate
+fn get_dummy_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
     Ok((
-        cert.cert.into(),
-        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()).into(),
+        CertificateDer::from(scatter::cert::CERT_DER),
+        rustls::pki_types::PrivatePkcs8KeyDer::from(scatter::cert::KEY_DER).into(),
     ))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (cert, key) = generate_dummy_cert()?;
+    let (cert, key) = get_dummy_cert()?;
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![cert], key)?;
