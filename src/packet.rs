@@ -18,6 +18,11 @@ impl Packet {
         Packet { payload: encrypted }
     }
 
+    /// 构造敏感文本数据包（会执行压缩 + 加密）
+    pub fn from_sensitive_text(text: &str) -> Self {
+        Self::new(text.as_bytes().to_vec())
+    }
+
     /// 写入数据包到流
     pub async fn write_to<W: AsyncWriteExt + Unpin>(&self, writer: &mut W) -> Result<()> {
         let payload_len = self.payload.len() as u32;

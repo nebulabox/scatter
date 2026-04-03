@@ -184,7 +184,7 @@ async fn handle_client(
         bail!("目标地址过长");
     }
 
-    let packet = Packet::new(target_info.into_bytes());
+    let packet = Packet::from_sensitive_text(&target_info);
     packet.write_to(&mut server_write).await?;
 
     // 3. 等待 Server 确认它连接目标成功
